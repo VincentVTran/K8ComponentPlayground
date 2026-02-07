@@ -67,6 +67,33 @@ func (w *worker) StartWorkerPool(workerFunc func(interface{}) (ctrl.Result, erro
 
 // processNextItem returns false if the queue is shut down, otherwise processes the job and returns true
 func (w *worker) processNextItem() (cont bool) {
+	job, quit := w.queue.Get()
+	if quit {
+		return
+	}
+	defer w.queue.Done(job)
+	log := w.Log.WithValues("job", job)
+
+	cont = true
+	// Handles any error with completing job - if job fails, re-queue it again
+	if result, err := w.workerFunc(job); err != nil {
+		if w.queue.NumRequeues(job) >= w.maxRetriesOnErr {
+			log.Error(err, "exceeded maximum retries", "max retries", w.maxRetriesOnErr)
+			w.queue.Forget(job)
+			return
+		}
+		log.Error(err, "re-queuing job", "retry count", w.queue.NumRequeues(job))
+		w.queue.AddRateLimited(job)
+		return
+	} else if result.RequeueAfter > 7*time.Second {
+		log.V(1).Info("timed retry", "retry after", result.RequeueAfter)
+		w.queue.AddAfter(job, result.RequeueAfter)
+		return
+	}
+
+	log.V(1).Info("completed job successfully")
+
+	w.queue.Forget(job)
 	return
 }
 
